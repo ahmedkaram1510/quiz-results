@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>أوراق الكوزات</title>
+<style>
+  :root{
+    --bg:#f5f6fa; --card:#ffffff; --ink:#1b2133; --muted:#64708a; --line:#dde2ee;
+    --brand:#2f5be3; --brand-ink:#ffffff; --err:#c0392b; --ok:#1e8e5a;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#10131c; --card:#181c28; --ink:#eef1f8; --muted:#9aa5bf; --line:#2a3145;
+      --brand:#6f93ff; --brand-ink:#0d1220; --err:#ff8a7a; --ok:#58d39a; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Tahoma,"Noto Sans Arabic",system-ui,sans-serif;
+    min-height:100vh;display:flex;justify-content:center;padding:24px 16px}
+  main{width:100%;max-width:560px}
+  h1{font-size:1.35rem;margin:8px 0 4px}
+  p.sub{margin:0 0 20px;color:var(--muted);line-height:1.7}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+  label{display:block;font-weight:600;margin-bottom:8px}
+  input{width:100%;font:inherit;font-size:1.3rem;letter-spacing:.18em;text-align:center;
+    direction:ltr;text-transform:uppercase;padding:12px;border-radius:10px;
+    border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+  input:focus{outline:2px solid var(--brand);outline-offset:1px}
+  button,a.btn{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:10px;
+    padding:12px 16px;background:var(--brand);color:var(--brand-ink);text-decoration:none;
+    display:inline-block;text-align:center}
+  button.full{width:100%;margin-top:12px}
+  button:disabled{opacity:.6;cursor:wait}
+  a.btn.ghost,button.ghost{background:transparent;color:var(--brand);border:1px solid var(--brand)}
+  #msg{margin-top:12px;min-height:1.4em;color:var(--err);line-height:1.6}
+  #msg.ok{color:var(--ok)}
+  .result{margin-top:16px}
+  .result .title{font-weight:700}
+  .result .who{color:var(--muted);margin:2px 0 12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row .btn,.row button{flex:1 1 140px}
+  iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:10px;margin-top:12px;background:#fff}
+  footer{margin-top:18px;color:var(--muted);font-size:.85rem;line-height:1.7}
+</style>
+</head>
+<body>
+<main>
+  <h1>أوراق الكوزات</h1>
+  <p class="sub">اكتب الكود الخاص بك اللي وصلك من الدكتور علشان تشوف ورقتك. الكود شخصي، ماتشاركوش مع حد.</p>
+
+  <form class="card" id="f" autocomplete="off">
+    <label for="code">الكود</label>
+    <input id="code" inputmode="text" autocapitalize="characters" spellcheck="false"
+           placeholder="XXXX-XXXX" maxlength="12" required>
+    <button class="full" id="go" type="submit">عرض ورقتي</button>
+    <div id="msg" role="status" aria-live="polite"></div>
+  </form>
+
+  <div id="out"></div>
+
+  <footer>الأوراق مشفّرة، وبتتفتح على جهازك أنت بس بالكود الخاص بيك. لو الكود مش شغال أو ضاع، كلّم الدكتور.</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const hex2buf = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
+const toHex = (u) => [...u].map((b) => b.toString(16).padStart(2, '0')).join('');
+const urls = [];
+
+async function getJSON(u){ const r = await fetch(u, {cache:'no-cache'}); if(!r.ok) throw new Error(u); return r.json(); }
+
+async function derive(code, saltHex, iter){
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits(
+    {name:'PBKDF2', hash:'SHA-256', salt:hex2buf(saltHex), iterations:iter}, base, 384));
+  return { id: toHex(bits.slice(0,16)), key: bits.slice(16) };
+}
+
+async function tryQuiz(qkey, code){
+  const meta = await getJSON(`quizzes/${qkey}/meta.json`);
+  const { id, key } = await derive(code, meta.salt, meta.iter);
+  const r = await fetch(`quizzes/${qkey}/${id}.bin`);
+  if (!r.ok) return null;
+  const data = new Uint8Array(await r.arrayBuffer());
+  const k = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
+  let plain;
+  try { plain = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv:data.slice(0,12)}, k, data.slice(12))); }
+  catch { return null; }
+  const hlen = new DataView(plain.buffer, plain.byteOffset).getUint32(0);
+  const head = JSON.parse(new TextDecoder().decode(plain.slice(4, 4+hlen)));
+  return { title: meta.title, name: head.n, pdf: plain.slice(4+hlen) };
+}
+
+function render(items){
+  urls.splice(0).forEach(URL.revokeObjectURL);
+  const out = $('out'); out.innerHTML = '';
+  for (const it of items){
+    const url = URL.createObjectURL(new Blob([it.pdf], {type:'application/pdf'})); urls.push(url);
+    const box = document.createElement('div'); box.className = 'card result';
+    const t = document.createElement('div'); t.className = 'title'; t.textContent = it.title;
+    const w = document.createElement('div'); w.className = 'who'; w.textContent = it.name;
+    const row = document.createElement('div'); row.className = 'row';
+    const open = document.createElement('a'); open.className = 'btn'; open.href = url; open.target = '_blank'; open.rel = 'noopener'; open.textContent = 'فتح الورقة';
+    const dl = document.createElement('a'); dl.className = 'btn ghost'; dl.href = url; dl.download = it.title + '.pdf'; dl.textContent = 'تحميل';
+    const view = document.createElement('button'); view.type = 'button'; view.className = 'ghost'; view.textContent = 'عرض هنا';
+    view.onclick = () => {
+      const old = box.querySelector('iframe'); if (old){ old.remove(); return; }
+      const fr = document.createElement('iframe'); fr.src = url; box.appendChild(fr);
+    };
+    row.append(open, dl, view); box.append(t, w, row); out.appendChild(box);
+  }
+}
+
+$('code').addEventListener('input', (e) => {
+  let v = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  e.target.value = v.length > 4 ? v.slice(0,4) + '-' + v.slice(4) : v;
+});
+
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const code = $('code').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const msg = $('msg'), go = $('go');
+  $('out').innerHTML = ''; msg.className = '';
+  if (code.length !== 8){ msg.textContent = 'الكود لازم يكون 8 حروف وأرقام.'; return; }
+  go.disabled = true; msg.textContent = 'جاري التحقق...';
+  try{
+    const list = await getJSON('quizzes.json');
+    const found = [];
+    for (const q of list){ const r = await tryQuiz(q.key, code); if (r) found.push(r); }
+    if (!found.length){ msg.textContent = 'الكود غير صحيح أو مفيش ورقة ليك لسه.'; }
+    else { msg.className = 'ok'; msg.textContent = 'أهلاً ' + found[0].name; render(found); }
+  }catch(err){ msg.textContent = 'حصلت مشكلة في التحميل، جرّب تاني.'; }
+  go.disabled = false;
+});
+</script>
+</body>
+</html>
